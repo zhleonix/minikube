@@ -59,6 +59,7 @@ WantedBy=multi-user.target
 var startCommandTemplate = `
 if which systemctl 2>&1 1>/dev/null; then
   {{.StartCommandSystemd}}
+  sudo systemctl disable systemd-networkd-wait-online.service
   sudo systemctl daemon-reload
   sudo systemctl enable localkube.service
   sudo systemctl restart localkube.service || true

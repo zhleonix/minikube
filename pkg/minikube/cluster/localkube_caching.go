@@ -36,7 +36,7 @@ import (
 )
 
 func updateLocalkubeFromAsset(client *ssh.Client) error {
-	contents, err := assets.Asset("out/localkube")
+	contents, err := assets.Asset("localkube")
 	if err != nil {
 		return errors.Wrap(err, "Error loading asset out/localkube")
 	}
