@@ -17,70 +17,74 @@ limitations under the License.
 package localkube
 
 import (
-	"strings"
+	"net"
+	"path"
+	"strconv"
 
-	"k8s.io/client-go/1.5/kubernetes"
-	"k8s.io/client-go/1.5/rest"
+	apiserveroptions "k8s.io/apiserver/pkg/server/options"
+	"k8s.io/apiserver/pkg/storage/storagebackend"
+
 	apiserver "k8s.io/kubernetes/cmd/kube-apiserver/app"
 	"k8s.io/kubernetes/cmd/kube-apiserver/app/options"
-
-	"k8s.io/kubernetes/pkg/storage/storagebackend"
+	kubeapioptions "k8s.io/kubernetes/pkg/kubeapiserver/options"
 )
 
 func (lk LocalkubeServer) NewAPIServer() Server {
-	return NewSimpleServer("apiserver", serverInterval, StartAPIServer(lk))
+	return NewSimpleServer("apiserver", serverInterval, StartAPIServer(lk), readyFunc(lk))
 }
 
 func StartAPIServer(lk LocalkubeServer) func() error {
 	config := options.NewServerRunOptions()
 
-	config.GenericServerRunOptions.BindAddress = lk.APIServerAddress
-	config.GenericServerRunOptions.SecurePort = lk.APIServerPort
-	config.GenericServerRunOptions.InsecureBindAddress = lk.APIServerInsecureAddress
-	config.GenericServerRunOptions.InsecurePort = lk.APIServerInsecurePort
+	config.SecureServing.BindAddress = lk.APIServerAddress
+	config.SecureServing.BindPort = lk.APIServerPort
 
-	config.GenericServerRunOptions.ClientCAFile = lk.GetCAPublicKeyCertPath()
-	config.GenericServerRunOptions.TLSCertFile = lk.GetPublicKeyCertPath()
-	config.GenericServerRunOptions.TLSPrivateKeyFile = lk.GetPrivateKeyCertPath()
-	config.GenericServerRunOptions.AdmissionControl = "NamespaceLifecycle,LimitRanger,ServiceAccount,DefaultStorageClass,ResourceQuota"
+	config.InsecureServing.BindAddress = lk.APIServerInsecureAddress
+	config.InsecureServing.BindPort = lk.APIServerInsecurePort
 
+	config.Authentication.ClientCert.ClientCA = lk.GetCAPublicKeyCertPath()
+
+	config.SecureServing.ServerCert.CertKey.CertFile = lk.GetPublicKeyCertPath()
+	config.SecureServing.ServerCert.CertKey.KeyFile = lk.GetPrivateKeyCertPath()
+	config.Admission.PluginNames = []string{
+		"NamespaceLifecycle",
+		"LimitRanger",
+		"ServiceAccount",
+		"DefaultStorageClass",
+		"ResourceQuota",
+	}
 	// use localkube etcd
-	config.GenericServerRunOptions.StorageConfig = storagebackend.Config{ServerList: KubeEtcdClientURLs}
+
+	config.Etcd.StorageConfig.ServerList = KubeEtcdClientURLs
+	config.Etcd.StorageConfig.Type = storagebackend.StorageTypeETCD2
 
 	// set Service IP range
-	config.GenericServerRunOptions.ServiceClusterIPRange = lk.ServiceClusterIPRange
+	config.ServiceClusterIPRange = lk.ServiceClusterIPRange
+	config.Etcd.EnableWatchCache = true
+
+	config.Features = &apiserveroptions.FeatureOptions{
+		EnableProfiling: true,
+	}
 
 	// defaults from apiserver command
-	config.GenericServerRunOptions.EnableProfiling = true
-	config.GenericServerRunOptions.EnableWatchCache = true
 	config.GenericServerRunOptions.MinRequestTimeout = 1800
 
 	config.AllowPrivileged = true
 
-	config.GenericServerRunOptions.RuntimeConfig = lk.RuntimeConfig
+	config.APIEnablement = &kubeapioptions.APIEnablementOptions{
+		RuntimeConfig: lk.RuntimeConfig,
+	}
 
 	lk.SetExtraConfigForComponent("apiserver", &config)
 
 	return func() error {
-		return apiserver.Run(config)
+		stop := make(chan struct{})
+		return apiserver.Run(config, stop)
 	}
 }
 
-// notFoundErr returns true if the passed error is an API server object not found error
-func notFoundErr(err error) bool {
-	if err == nil {
-		return false
-	}
-	return strings.HasSuffix(err.Error(), "not found")
-}
-
-func kubeClient() *kubernetes.Clientset {
-	config := &rest.Config{
-		Host: "http://localhost:8080", // TODO: Make configurable
-	}
-	client, err := kubernetes.NewForConfig(config)
-	if err != nil {
-		panic(err)
-	}
-	return client
+func readyFunc(lk LocalkubeServer) HealthCheck {
+	hostport := net.JoinHostPort(lk.APIServerInsecureAddress.String(), strconv.Itoa(lk.APIServerInsecurePort))
+	addr := "http://" + path.Join(hostport, "healthz")
+	return healthCheck(addr)
 }

@@ -17,21 +17,36 @@ limitations under the License.
 package constants
 
 import (
+	"fmt"
+	"os"
 	"path/filepath"
 
-	"k8s.io/kubernetes/pkg/client/unversioned/clientcmd"
-	"k8s.io/kubernetes/pkg/util/homedir"
+	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/util/homedir"
 	"k8s.io/kubernetes/pkg/version"
+	minikubeVersion "k8s.io/minikube/pkg/version"
 )
 
-// MachineName is the name to use for the VM.
-const MachineName = "minikube"
-
 // APIServerPort is the port that the API server should listen on.
-const APIServerPort = 8443
+const (
+	APIServerName    = "minikubeCA"
+	ClusterDNSDomain = "cluster.local"
+)
+
+const MinikubeHome = "MINIKUBE_HOME"
 
 // Minipath is the path to the user's minikube dir
-var Minipath = filepath.Join(homedir.HomeDir(), ".minikube")
+func GetMinipath() string {
+	if os.Getenv(MinikubeHome) == "" {
+		return DefaultMinipath
+	}
+	if filepath.Base(os.Getenv(MinikubeHome)) == ".minikube" {
+		return os.Getenv(MinikubeHome)
+	}
+	return filepath.Join(os.Getenv(MinikubeHome), ".minikube")
+}
+
+var DefaultMinipath = filepath.Join(homedir.HomeDir(), ".minikube")
 
 // KubeconfigPath is the path to the Kubernetes client config
 var KubeconfigPath = clientcmd.RecommendedHomeFile
@@ -45,12 +60,20 @@ const MinikubeContext = "minikube"
 // MinikubeEnvPrefix is the prefix for the environmental variables
 const MinikubeEnvPrefix = "MINIKUBE"
 
+// DefaultMachineName is the default name for the VM
+const DefaultMachineName = "minikube"
+
+// The name of the default storage class provisioner
+const DefaultStorageClassProvisioner = "standard"
+
 // MakeMiniPath is a utility to calculate a relative path to our directory.
 func MakeMiniPath(fileName ...string) string {
-	args := []string{Minipath}
+	args := []string{GetMinipath()}
 	args = append(args, fileName...)
 	return filepath.Join(args...)
 }
+
+var MountProcessFileName = ".mount-process"
 
 // Only pass along these flags to localkube.
 var LogFlags = [...]string{
@@ -60,21 +83,24 @@ var LogFlags = [...]string{
 
 const (
 	DefaultKeepContext  = false
-	DefaultIsoUrl       = "https://storage.googleapis.com/minikube/iso/minikube-v1.0.5.iso"
 	ShaSuffix           = ".sha256"
-	DefaultIsoShaUrl    = DefaultIsoUrl + ShaSuffix
 	DefaultMemory       = 2048
 	DefaultCPUS         = 2
 	DefaultDiskSize     = "20g"
 	MinimumDiskSizeMB   = 2000
 	DefaultVMDriver     = "virtualbox"
-	DefaultStatusFormat = "minikubeVM: {{.MinikubeStatus}}\n" +
-		"localkube: {{.LocalkubeStatus}}\n"
+	DefaultStatusFormat = "minikube: {{.MinikubeStatus}}\n" +
+		"localkube: {{.LocalkubeStatus}}\n" + "kubectl: {{.KubeconfigStatus}}\n"
 	DefaultAddonListFormat    = "- {{.AddonName}}: {{.AddonStatus}}\n"
 	DefaultConfigViewFormat   = "- {{.ConfigKey}}: {{.ConfigValue}}\n"
 	GithubMinikubeReleasesURL = "https://storage.googleapis.com/minikube/releases.json"
 	KubernetesVersionGCSURL   = "https://storage.googleapis.com/minikube/k8s_releases.json"
+	DefaultWait               = 20
+	DefaultInterval           = 6
 )
+
+var DefaultIsoUrl = fmt.Sprintf("https://storage.googleapis.com/%s/minikube-%s.iso", minikubeVersion.GetIsoPath(), minikubeVersion.GetIsoVersion())
+var DefaultIsoShaUrl = DefaultIsoUrl + ShaSuffix
 
 var DefaultKubernetesVersion = version.Get().GitVersion
 
@@ -102,3 +128,13 @@ const (
 	LocalkubeRunning     = "active"
 	LocalkubeStopped     = "inactive"
 )
+
+const (
+	DefaultUfsPort       = "5640"
+	DefaultUfsDebugLvl   = 0
+	DefaultMountEndpoint = "/minikube-host"
+	DefaultMsize         = 262144
+	DefaultMountVersion  = "9p2000.u"
+)
+
+const IsMinikubeChildProcess = "IS_MINIKUBE_CHILD_PROCESS"

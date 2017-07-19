@@ -21,11 +21,11 @@ import (
 	"os"
 	"os/signal"
 
-	"github.com/coreos/pkg/capnslog"
 	"github.com/golang/glog"
+	"k8s.io/apiserver/pkg/util/feature"
+
 	"k8s.io/kubernetes/pkg/capabilities"
 	"k8s.io/kubernetes/pkg/kubelet/types"
-	"k8s.io/kubernetes/pkg/util/config"
 	"k8s.io/minikube/pkg/localkube"
 	"k8s.io/minikube/pkg/version"
 )
@@ -40,10 +40,11 @@ func StartLocalkube() {
 		os.Exit(0)
 	}
 
-	// Get the etcd logger for the api repo
-	apiRepoLogger := capnslog.MustRepoLogger("github.com/coreos/etcd/etcdserver/api")
-	// Set the logging level to NOTICE as there is an INFO lvl log statement that runs every few seconds -> log spam
-	apiRepoLogger.SetRepoLogLevel(capnslog.NOTICE)
+	if Server.ShowHostIP {
+		hostIP, _ := Server.GetHostIP()
+		fmt.Println("localkube host ip: ", hostIP.String())
+		os.Exit(0)
+	}
 
 	// TODO: Require root
 
@@ -67,10 +68,10 @@ func SetupServer(s *localkube.LocalkubeServer) {
 		}
 	}
 
-	//Set feature gates
-	glog.Infof("Feature gates:", s.FeatureGates)
+	// Set feature gates
 	if s.FeatureGates != "" {
-		err := config.DefaultFeatureGate.Set(s.FeatureGates)
+		glog.Infof("Setting Feature Gates: %s", s.FeatureGates)
+		err := feature.DefaultFeatureGate.Set(s.FeatureGates)
 		if err != nil {
 			fmt.Printf("Error setting feature gates: %s", err)
 		}
@@ -93,7 +94,12 @@ func SetupServer(s *localkube.LocalkubeServer) {
 	if err != nil {
 		panic(err)
 	}
-	s.AddServer(etcd)
+	// Start etcd first
+	etcd.Start()
+
+	// setup access to etcd
+	netIP, _ := s.GetHostIP()
+	fmt.Printf("localkube host ip address: %s\n", netIP.String())
 
 	// setup apiserver
 	apiserver := s.NewAPIServer()
@@ -114,4 +120,7 @@ func SetupServer(s *localkube.LocalkubeServer) {
 	// setup proxy
 	proxy := s.NewProxyServer()
 	s.AddServer(proxy)
+
+	storageProvisioner := s.NewStorageProvisionerServer()
+	s.AddServer(storageProvisioner)
 }

@@ -17,47 +17,75 @@ limitations under the License.
 package cmd
 
 import (
+	"fmt"
 	"os"
 	"text/template"
 
-	"github.com/docker/machine/libmachine"
 	"github.com/docker/machine/libmachine/state"
 	"github.com/golang/glog"
 	"github.com/spf13/cobra"
 	cmdUtil "k8s.io/minikube/cmd/util"
 	"k8s.io/minikube/pkg/minikube/cluster"
+	"k8s.io/minikube/pkg/minikube/config"
 	"k8s.io/minikube/pkg/minikube/constants"
+	"k8s.io/minikube/pkg/minikube/machine"
+	"k8s.io/minikube/pkg/util/kubeconfig"
 )
 
 var statusFormat string
 
 type Status struct {
-	MinikubeStatus  string
-	LocalkubeStatus string
+	MinikubeStatus   string
+	LocalkubeStatus  string
+	KubeconfigStatus string
 }
 
 // statusCmd represents the status command
 var statusCmd = &cobra.Command{
 	Use:   "status",
-	Short: "Gets the status of a local kubernetes cluster.",
+	Short: "Gets the status of a local kubernetes cluster",
 	Long:  `Gets the status of a local kubernetes cluster.`,
 	Run: func(cmd *cobra.Command, args []string) {
-		api := libmachine.NewClient(constants.Minipath, constants.MakeMiniPath("certs"))
+		api, err := machine.NewAPIClient()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error getting client: %s\n", err)
+			os.Exit(1)
+		}
 		defer api.Close()
+
 		ms, err := cluster.GetHostStatus(api)
 		if err != nil {
 			glog.Errorln("Error getting machine status:", err)
 			cmdUtil.MaybeReportErrorAndExit(err)
 		}
-		ls := "N/A"
+
+		ls := state.None.String()
+		ks := state.None.String()
 		if ms == state.Running.String() {
 			ls, err = cluster.GetLocalkubeStatus(api)
+			if err != nil {
+				glog.Errorln("Error localkube status:", err)
+				cmdUtil.MaybeReportErrorAndExit(err)
+			}
+			ip, err := cluster.GetHostDriverIP(api)
+			if err != nil {
+				glog.Errorln("Error host driver ip status:", err)
+				cmdUtil.MaybeReportErrorAndExit(err)
+			}
+			kstatus, err := kubeconfig.GetKubeConfigStatus(ip, constants.KubeconfigPath, config.GetMachineName())
+			if err != nil {
+				glog.Errorln("Error kubeconfig status:", err)
+				cmdUtil.MaybeReportErrorAndExit(err)
+			}
+			if kstatus {
+				ks = "Correctly Configured: pointing to minikube-vm at " + ip.String()
+			} else {
+				ks = "Misconfigured: pointing to stale minikube-vm." +
+					"\nTo fix the kubectl context, run minikube update-context"
+			}
 		}
-		if err != nil {
-			glog.Errorln("Error getting machine status:", err)
-			cmdUtil.MaybeReportErrorAndExit(err)
-		}
-		status := Status{ms, ls}
+
+		status := Status{ms, ls, ks}
 
 		tmpl, err := template.New("status").Parse(statusFormat)
 		if err != nil {

@@ -21,11 +21,12 @@ import (
 	"os"
 	"text/template"
 
-	"github.com/docker/machine/libmachine"
 	"github.com/spf13/cobra"
 	"k8s.io/minikube/pkg/minikube/assets"
 	"k8s.io/minikube/pkg/minikube/cluster"
 	"k8s.io/minikube/pkg/minikube/constants"
+	"k8s.io/minikube/pkg/minikube/machine"
+	"k8s.io/minikube/pkg/minikube/service"
 )
 
 var (
@@ -34,6 +35,8 @@ var (
 	addonsURLMode     bool
 	addonsURLFormat   string
 	addonsURLTemplate *template.Template
+	wait              int
+	interval          int
 )
 
 const defaultAddonsFormatTemplate = "http://{{.IP}}:{{.Port}}"
@@ -56,7 +59,12 @@ var addonsOpenCmd = &cobra.Command{
 			os.Exit(1)
 		}
 		addonName := args[0]
-		api := libmachine.NewClient(constants.Minipath, constants.MakeMiniPath("certs"))
+		//TODO(r2d4): config should not reference API, pull this out
+		api, err := machine.NewAPIClient()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error getting client: %s\n", err)
+			os.Exit(1)
+		}
 		defer api.Close()
 
 		cluster.EnsureMinikubeRunningOrExit(api, 1)
@@ -67,7 +75,7 @@ To see the list of available addons run:
 minikube addons list`, addonName))
 			os.Exit(1)
 		}
-		ok, err := addon.IsEnabled()
+		ok, err = addon.IsEnabled()
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err.Error())
 			os.Exit(1)
@@ -82,20 +90,22 @@ minikube addons enable %s`, addonName, addonName))
 		namespace := "kube-system"
 		key := "kubernetes.io/minikube-addons-endpoint"
 
-		serviceList, err := cluster.GetServiceListByLabel(namespace, key, addonName)
+		serviceList, err := service.GetServiceListByLabel(namespace, key, addonName)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error getting service with namespace: %s and labels %s:%s: %s", namespace, key, addonName, err)
+			fmt.Fprintf(os.Stderr, "Error getting service with namespace: %s and labels %s:%s: %s\n", namespace, key, addonName, err)
 			os.Exit(1)
 		}
 		if len(serviceList.Items) == 0 {
 			fmt.Fprintf(os.Stdout, `
 This addon does not have an endpoint defined for the 'addons open' command
-You can add one by annotating a service with the label %s:%s`, key, addonName)
+You can add one by annotating a service with the label %s:%s
+`, key, addonName)
 			os.Exit(0)
 		}
 		for i := range serviceList.Items {
-			service := serviceList.Items[i].ObjectMeta.Name
-			cluster.WaitAndMaybeOpenService(api, namespace, service, addonsURLTemplate, addonsURLMode, https)
+			svc := serviceList.Items[i].ObjectMeta.Name
+			service.WaitAndMaybeOpenService(api, namespace, svc, addonsURLTemplate,
+				addonsURLMode, https, wait, interval)
 
 		}
 	},
@@ -104,7 +114,8 @@ You can add one by annotating a service with the label %s:%s`, key, addonName)
 func init() {
 	addonsOpenCmd.Flags().BoolVar(&addonsURLMode, "url", false, "Display the kubernetes addons URL in the CLI instead of opening it in the default browser")
 	addonsOpenCmd.Flags().BoolVar(&https, "https", false, "Open the addons URL with https instead of http")
-
+	addonsOpenCmd.Flags().IntVar(&wait, "wait", constants.DefaultWait, "Amount of time to wait for service in seconds")
+	addonsOpenCmd.Flags().IntVar(&interval, "interval", constants.DefaultInterval, "The time interval for each check that wait performs in seconds")
 	addonsOpenCmd.PersistentFlags().StringVar(&addonsURLFormat, "format", defaultAddonsFormatTemplate, "Format to output addons URL in.  This format will be applied to each url individually and they will be printed one at a time.")
 	AddonsCmd.AddCommand(addonsOpenCmd)
 }

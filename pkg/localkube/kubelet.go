@@ -22,7 +22,7 @@ import (
 )
 
 func (lk LocalkubeServer) NewKubeletServer() Server {
-	return NewSimpleServer("kubelet", serverInterval, StartKubeletServer(lk))
+	return NewSimpleServer("kubelet", serverInterval, StartKubeletServer(lk), noop)
 }
 
 func StartKubeletServer(lk LocalkubeServer) func() error {
@@ -39,7 +39,7 @@ func StartKubeletServer(lk LocalkubeServer) func() error {
 
 	// Networking
 	config.ClusterDomain = lk.DNSDomain
-	config.ClusterDNS = lk.DNSIP.String()
+	config.ClusterDNS = []string{lk.DNSIP.String()}
 	// For kubenet plugin.
 	config.PodCIDR = "10.180.1.0/24"
 

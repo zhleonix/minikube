@@ -18,10 +18,13 @@ package cluster
 
 import (
 	"fmt"
+	"os/exec"
 	"path/filepath"
 
 	"github.com/docker/machine/libmachine/drivers"
+	cfg "k8s.io/minikube/pkg/minikube/config"
 	"k8s.io/minikube/pkg/minikube/constants"
+	"k8s.io/minikube/pkg/minikube/machine/drivers/none"
 )
 
 type kvmDriver struct {
@@ -42,18 +45,35 @@ type kvmDriver struct {
 func createKVMHost(config MachineConfig) *kvmDriver {
 	return &kvmDriver{
 		BaseDriver: &drivers.BaseDriver{
-			MachineName: constants.MachineName,
-			StorePath:   constants.Minipath,
+			MachineName: cfg.GetMachineName(),
+			StorePath:   constants.GetMinipath(),
 		},
 		Memory:         config.Memory,
 		CPU:            config.CPUs,
 		Network:        config.KvmNetwork,
 		PrivateNetwork: "docker-machines",
-		Boot2DockerURL: config.GetISOFileURI(),
+		Boot2DockerURL: config.Downloader.GetISOFileURI(config.MinikubeISO),
 		DiskSize:       config.DiskSize,
-		DiskPath:       filepath.Join(constants.Minipath, "machines", constants.MachineName, fmt.Sprintf("%s.img", constants.MachineName)),
-		ISO:            filepath.Join(constants.Minipath, "machines", constants.MachineName, "boot2docker.iso"),
+		DiskPath:       filepath.Join(constants.GetMinipath(), "machines", cfg.GetMachineName(), fmt.Sprintf("%s.img", cfg.GetMachineName())),
+		ISO:            filepath.Join(constants.GetMinipath(), "machines", cfg.GetMachineName(), "boot2docker.iso"),
 		CacheMode:      "default",
 		IOMode:         "threads",
+	}
+}
+
+func detectVBoxManageCmd() string {
+	cmd := "VBoxManage"
+	if path, err := exec.LookPath(cmd); err == nil {
+		return path
+	}
+	return cmd
+}
+
+func createNoneHost(config MachineConfig) *none.Driver {
+	return &none.Driver{
+		BaseDriver: &drivers.BaseDriver{
+			MachineName: cfg.GetMachineName(),
+			StorePath:   constants.GetMinipath(),
+		},
 	}
 }

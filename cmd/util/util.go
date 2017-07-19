@@ -22,12 +22,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/ioutil"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
+
+	"strconv"
 
 	"github.com/golang/glog"
 	"github.com/pkg/errors"
@@ -47,6 +52,14 @@ type ServiceContext struct {
 type Message struct {
 	Message        string `json:"message"`
 	ServiceContext `json:"serviceContext"`
+}
+
+type LookPath func(filename string) (string, error)
+
+var lookPath LookPath
+
+func init() {
+	lookPath = exec.LookPath
 }
 
 func ReportError(err error, url string) error {
@@ -108,7 +121,7 @@ func UploadError(b []byte, url string) error {
 	if err != nil {
 		return errors.Wrap(err, "")
 	} else if resp.StatusCode != 200 {
-		return errors.Errorf("Error sending error report to %s, got response code %s", url, resp.StatusCode)
+		return errors.Errorf("Error sending error report to %s, got response code %d", url, resp.StatusCode)
 	}
 	return nil
 }
@@ -160,7 +173,7 @@ func PromptUserForAccept(r io.Reader) bool {
 		} else if response == "n" || response == "no" {
 			return false
 		} else {
-			fmt.Println("Invalid response, error reporting remains disabled.  Must be in form [Y/n]")
+			fmt.Println("Invalid response, error reporting remains disabled. Must be in form [Y/n]")
 			return false
 		}
 	case <-time.After(30 * time.Second):
@@ -168,29 +181,28 @@ func PromptUserForAccept(r io.Reader) bool {
 	}
 }
 
-func MaybePrintKubectlDownloadMsg() {
+func MaybePrintKubectlDownloadMsg(goos string, out io.Writer) {
 	if !viper.GetBool(config.WantKubectlDownloadMsg) {
 		return
 	}
+
 	verb := "run"
 	installInstructions := "curl -Lo kubectl https://storage.googleapis.com/kubernetes-release/release/%s/bin/%s/%s/kubectl && chmod +x kubectl && sudo mv kubectl /usr/local/bin/"
-	if runtime.GOOS == "windows" {
+	if goos == "windows" {
 		verb = "do"
 		installInstructions = `download kubectl from:
 https://storage.googleapis.com/kubernetes-release/release/%s/bin/%s/%s/kubectl.exe
 Add kubectl to your system PATH`
 	}
 
-	var err error
-	if runtime.GOOS == "windows" {
-		_, err = exec.LookPath("kubectl.exe")
-	} else {
-		_, err = exec.LookPath("kubectl")
+	_, err := lookPath("kubectl")
+	if err != nil && goos == "windows" {
+		_, err = lookPath("kubectl.exe")
 	}
 	if err != nil {
-		fmt.Fprintf(os.Stderr,
+		fmt.Fprintf(out,
 			`========================================
-kubectl could not be found on your path.  kubectl is a requirement for using minikube
+kubectl could not be found on your path. kubectl is a requirement for using minikube
 To install kubectl, please %s the following:
 
 %s
@@ -200,6 +212,37 @@ To disable this message, run the following:
 minikube config set WantKubectlDownloadMsg false
 ========================================
 `,
-			verb, fmt.Sprintf(installInstructions, constants.DefaultKubernetesVersion, runtime.GOOS, runtime.GOARCH))
+			verb, fmt.Sprintf(installInstructions, constants.DefaultKubernetesVersion, goos, runtime.GOARCH))
 	}
+}
+
+// Ask the kernel for a free open port that is ready to use
+func GetPort() (string, error) {
+	addr, err := net.ResolveTCPAddr("tcp", "localhost:0")
+	if err != nil {
+		panic(err)
+	}
+
+	l, err := net.ListenTCP("tcp", addr)
+	if err != nil {
+		return "", errors.Errorf("Error accessing port %d", addr.Port)
+	}
+	defer l.Close()
+	return strconv.Itoa(l.Addr().(*net.TCPAddr).Port), nil
+}
+
+func KillMountProcess() error {
+	out, err := ioutil.ReadFile(filepath.Join(constants.GetMinipath(), constants.MountProcessFileName))
+	if err != nil {
+		return nil // no mount process to kill
+	}
+	pid, err := strconv.Atoi(string(out))
+	if err != nil {
+		return errors.Wrap(err, "error converting mount string to pid")
+	}
+	mountProc, err := os.FindProcess(pid)
+	if err != nil {
+		return errors.Wrap(err, "error converting mount string to pid")
+	}
+	return mountProc.Kill()
 }

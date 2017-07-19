@@ -31,26 +31,27 @@ import (
 	"github.com/docker/machine/libmachine/host"
 	"github.com/docker/machine/libmachine/provision"
 	"github.com/docker/machine/libmachine/state"
-	"github.com/pkg/errors"
-	"k8s.io/client-go/1.5/pkg/api"
-	"k8s.io/client-go/1.5/pkg/api/unversioned"
-	"k8s.io/client-go/1.5/pkg/api/v1"
-	"k8s.io/client-go/1.5/pkg/watch"
-	"k8s.io/client-go/1.5/rest"
 	"k8s.io/minikube/pkg/minikube/assets"
+	"k8s.io/minikube/pkg/minikube/config"
 	"k8s.io/minikube/pkg/minikube/constants"
 	"k8s.io/minikube/pkg/minikube/tests"
 )
 
+type MockDownloader struct{}
+
+func (d MockDownloader) GetISOFileURI(isoURL string) string          { return "" }
+func (d MockDownloader) CacheMinikubeISOFromURL(isoURL string) error { return nil }
+
 var defaultMachineConfig = MachineConfig{
 	VMDriver:    constants.DefaultVMDriver,
 	MinikubeISO: constants.DefaultIsoUrl,
+	Downloader:  MockDownloader{},
 }
 
 func TestCreateHost(t *testing.T) {
 	api := tests.NewMockAPI()
 
-	exists, _ := api.Exists(constants.MachineName)
+	exists, _ := api.Exists(config.GetMachineName())
 	if exists {
 		t.Fatal("Machine already exists.")
 	}
@@ -58,12 +59,12 @@ func TestCreateHost(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error creating host: %v", err)
 	}
-	exists, _ = api.Exists(constants.MachineName)
+	exists, _ = api.Exists(config.GetMachineName())
 	if !exists {
 		t.Fatal("Machine does not exist, but should.")
 	}
 
-	h, err := api.Load(constants.MachineName)
+	h, err := api.Load(config.GetMachineName())
 	if err != nil {
 		t.Fatalf("Error loading machine: %v", err)
 	}
@@ -86,13 +87,29 @@ func TestCreateHost(t *testing.T) {
 }
 
 func TestStartCluster(t *testing.T) {
-	h := tests.NewMockHost()
-	ip, _ := h.Driver.GetIP()
-	kubernetesConfig := KubernetesConfig{
-		NodeIP: ip,
+	api := tests.NewMockAPI()
+
+	s, _ := tests.NewSSHServer()
+	port, err := s.Start()
+	if err != nil {
+		t.Fatalf("Error starting ssh server: %s", err)
 	}
 
-	err := StartCluster(h, kubernetesConfig)
+	d := &tests.MockDriver{
+		Port: port,
+		BaseDriver: drivers.BaseDriver{
+			IPAddress:  "127.0.0.1",
+			SSHKeyPath: "",
+		},
+		CurrentState: state.Running,
+	}
+	api.Hosts[config.GetMachineName()] = &host.Host{Driver: d}
+
+	kubernetesConfig := KubernetesConfig{
+		NodeIP: "",
+	}
+
+	err = StartCluster(api, kubernetesConfig)
 
 	if err != nil {
 		t.Fatalf("Error starting cluster: %s", err)
@@ -103,21 +120,37 @@ func TestStartCluster(t *testing.T) {
 		t.Fatalf("Error getting start command: %s", err)
 	}
 	for _, cmd := range []string{startCommand} {
-		if _, ok := h.Commands[cmd]; !ok {
-			t.Fatalf("Expected command not run: %s. Commands run: %v", cmd, h.Commands)
+		if _, ok := s.Commands[cmd]; !ok {
+			t.Fatalf("Expected command not run: %s. Commands run: %v", cmd, s.Commands)
 		}
 	}
 }
 
 func TestStartClusterError(t *testing.T) {
-	h := tests.NewMockHost()
-	h.Error = "error"
-	ip, _ := h.Driver.GetIP()
-	kubernetesConfig := KubernetesConfig{
-		NodeIP: ip,
+	api := tests.NewMockAPI()
+
+	s, _ := tests.NewSSHServer()
+	port, err := s.Start()
+	if err != nil {
+		t.Fatalf("Error starting ssh server: %s", err)
 	}
 
-	err := StartCluster(h, kubernetesConfig)
+	d := &tests.MockDriver{
+		Port: port,
+		BaseDriver: drivers.BaseDriver{
+			IPAddress:  "127.0.0.1",
+			SSHKeyPath: "",
+		},
+		CurrentState: state.Running,
+		HostError:    true,
+	}
+	api.Hosts[config.GetMachineName()] = &host.Host{Driver: d}
+
+	kubernetesConfig := KubernetesConfig{
+		NodeIP: "192",
+	}
+
+	err = StartCluster(api, kubernetesConfig)
 
 	if err == nil {
 		t.Fatal("Error not thrown starting cluster.")
@@ -146,7 +179,7 @@ func TestStartHostExists(t *testing.T) {
 	if err != nil {
 		t.Fatal("Error starting host.")
 	}
-	if h.Name != constants.MachineName {
+	if h.Name != config.GetMachineName() {
 		t.Fatalf("Machine created with incorrect name: %s", h.Name)
 	}
 	if s, _ := h.Driver.GetState(); s != state.Running {
@@ -174,7 +207,7 @@ func TestStartStoppedHost(t *testing.T) {
 	if err != nil {
 		t.Fatal("Error starting host.")
 	}
-	if h.Name != constants.MachineName {
+	if h.Name != config.GetMachineName() {
 		t.Fatalf("Machine created with incorrect name: %s", h.Name)
 	}
 
@@ -201,7 +234,7 @@ func TestStartHost(t *testing.T) {
 	if err != nil {
 		t.Fatal("Error starting host.")
 	}
-	if h.Name != constants.MachineName {
+	if h.Name != config.GetMachineName() {
 		t.Fatalf("Machine created with incorrect name: %s", h.Name)
 	}
 	if exists, _ := api.Exists(h.Name); !exists {
@@ -225,8 +258,10 @@ func TestStartHostConfig(t *testing.T) {
 	provision.SetDetector(md)
 
 	config := MachineConfig{
-		VMDriver:  constants.DefaultVMDriver,
-		DockerEnv: []string{"FOO=BAR"},
+		VMDriver:   constants.DefaultVMDriver,
+		DockerEnv:  []string{"FOO=BAR"},
+		DockerOpt:  []string{"param=value"},
+		Downloader: MockDownloader{},
 	}
 
 	h, err := StartHost(api, config)
@@ -239,6 +274,13 @@ func TestStartHostConfig(t *testing.T) {
 			t.Fatal("Docker env variables were not set!")
 		}
 	}
+
+	for i := range h.HostOptions.EngineOptions.ArbitraryFlags {
+		if h.HostOptions.EngineOptions.ArbitraryFlags[i] != config.DockerOpt[i] {
+			t.Fatal("Docker flags were not set!")
+		}
+	}
+
 }
 
 func TestStopHostError(t *testing.T) {
@@ -306,7 +348,7 @@ func TestDeleteHostMultipleErrors(t *testing.T) {
 		t.Fatal("Expected error deleting host, didn't get one.")
 	}
 
-	expectedErrors := []string{"Error removing " + constants.MachineName, "Error deleting machine"}
+	expectedErrors := []string{"Error removing " + config.GetMachineName(), "Error deleting machine"}
 	for _, expectedError := range expectedErrors {
 		if !strings.Contains(err.Error(), expectedError) {
 			t.Fatalf("Error %s expected to contain: %s.", err, expectedError)
@@ -327,7 +369,7 @@ func TestGetHostStatus(t *testing.T) {
 		}
 	}
 
-	checkState("Does Not Exist")
+	checkState(state.None.String())
 
 	createHost(api, defaultMachineConfig)
 	checkState(state.Running.String())
@@ -352,25 +394,25 @@ func TestGetLocalkubeStatus(t *testing.T) {
 			SSHKeyPath: "",
 		},
 	}
-	api.Hosts[constants.MachineName] = &host.Host{Driver: d}
+	api.Hosts[config.GetMachineName()] = &host.Host{Driver: d}
 
-	s.CommandToOutput = map[string]string{
+	s.SetCommandToOutput(map[string]string{
 		localkubeStatusCommand: state.Running.String(),
-	}
+	})
 	if _, err := GetLocalkubeStatus(api); err != nil {
 		t.Fatalf("Error getting localkube status: %s", err)
 	}
 
-	s.CommandToOutput = map[string]string{
+	s.SetCommandToOutput(map[string]string{
 		localkubeStatusCommand: state.Stopped.String(),
-	}
+	})
 	if _, err := GetLocalkubeStatus(api); err != nil {
 		t.Fatalf("Error getting localkube status: %s", err)
 	}
 
-	s.CommandToOutput = map[string]string{
+	s.SetCommandToOutput(map[string]string{
 		localkubeStatusCommand: "Bad Output",
-	}
+	})
 	if _, err := GetLocalkubeStatus(api); err == nil {
 		t.Fatalf("Expected error in getting localkube status as ssh returned bad output")
 	}
@@ -394,7 +436,7 @@ func TestSetupCerts(t *testing.T) {
 	tempDir := tests.MakeTempDir()
 	defer os.RemoveAll(tempDir)
 
-	if err := SetupCerts(d); err != nil {
+	if err := SetupCerts(d, constants.APIServerName, constants.ClusterDNSDomain); err != nil {
 		t.Fatalf("Error starting cluster: %s", err)
 	}
 
@@ -484,14 +526,35 @@ func TestHostGetLogs(t *testing.T) {
 			SSHKeyPath: "",
 		},
 	}
-	api.Hosts[constants.MachineName] = &host.Host{Driver: d}
+	api.Hosts[config.GetMachineName()] = &host.Host{Driver: d}
 
-	if _, err := GetHostLogs(api); err != nil {
-		t.Fatalf("Error getting host logs: %s", err)
+	tests := []struct {
+		description string
+		follow      bool
+	}{
+		{
+			description: "logs",
+			follow:      false,
+		},
+		{
+			description: "logs -f",
+			follow:      true,
+		},
 	}
 
-	if _, ok := s.Commands[logsCommand]; !ok {
-		t.Fatalf("Expected command not run: %s", logsCommand)
+	for _, test := range tests {
+		t.Run(test.description, func(t *testing.T) {
+			cmd, err := GetLogsCommand(test.follow)
+			if err != nil {
+				t.Errorf("Error getting the logs command: %s", err)
+			}
+			if _, err = GetHostLogs(api, test.follow); err != nil {
+				t.Errorf("Error getting host logs: %s", err)
+			}
+			if _, ok := s.Commands[cmd]; !ok {
+				t.Errorf("Expected command to run but did not: %s", cmd)
+			}
+		})
 	}
 }
 
@@ -512,82 +575,15 @@ func TestCreateSSHShell(t *testing.T) {
 			SSHKeyPath: "",
 		},
 	}
-	api.Hosts[constants.MachineName] = &host.Host{Driver: d}
+	api.Hosts[config.GetMachineName()] = &host.Host{Driver: d}
 
 	cliArgs := []string{"exit"}
 	if err := CreateSSHShell(api, cliArgs); err != nil {
 		t.Fatalf("Error running ssh command: %s", err)
 	}
 
-	if s.HadASessionRequested != true {
+	if !s.IsSessionRequested() {
 		t.Fatalf("Expected ssh session to be run")
-	}
-}
-
-type MockServiceGetter struct {
-	services map[string]v1.Service
-}
-
-func NewMockServiceGetter() *MockServiceGetter {
-	return &MockServiceGetter{
-		services: make(map[string]v1.Service),
-	}
-}
-
-func (mockServiceGetter *MockServiceGetter) Get(name string) (*v1.Service, error) {
-	service, ok := mockServiceGetter.services[name]
-	if !ok {
-		return nil, errors.Errorf("Error getting %s service from mockServiceGetter", name)
-	}
-	return &service, nil
-}
-
-func (mockServiceGetter *MockServiceGetter) List(options api.ListOptions) (*v1.ServiceList, error) {
-	services := v1.ServiceList{
-		TypeMeta: unversioned.TypeMeta{Kind: "ServiceList", APIVersion: "v1"},
-		ListMeta: unversioned.ListMeta{},
-	}
-
-	for _, svc := range mockServiceGetter.services {
-		services.Items = append(services.Items, svc)
-	}
-	return &services, nil
-}
-
-func TestGetServiceURLs(t *testing.T) {
-	mockServiceGetter := NewMockServiceGetter()
-	expected := []int32{1111, 2222}
-	mockDashboardService := v1.Service{
-		Spec: v1.ServiceSpec{
-			Ports: []v1.ServicePort{
-				{
-					NodePort: expected[0],
-				}, {
-					NodePort: expected[1],
-				}},
-		},
-	}
-	mockServiceGetter.services["mock-service"] = mockDashboardService
-
-	ports, err := getServicePortsFromServiceGetter(mockServiceGetter, "mock-service")
-	if err != nil {
-		t.Fatalf("Error getting mock-service ports from api: Error: %s", err)
-	}
-	for i := range ports {
-		if ports[i] != expected[i] {
-			t.Fatalf("Error getting mock-service port from api: Expected: %d, Got: %d", ports[0], expected)
-		}
-	}
-}
-
-func TestGetServiceURLWithoutNodePort(t *testing.T) {
-	mockServiceGetter := NewMockServiceGetter()
-	mockDashboardService := v1.Service{}
-	mockServiceGetter.services["mock-service"] = mockDashboardService
-
-	_, err := getServicePortsFromServiceGetter(mockServiceGetter, "mock-service")
-	if err == nil {
-		t.Fatalf("Expected error getting service with no node port")
 	}
 }
 
@@ -598,7 +594,6 @@ func TestUpdateDefault(t *testing.T) {
 		t.Fatalf("Error starting ssh server: %s", err)
 	}
 
-	h := tests.NewMockHost()
 	d := &tests.MockDriver{
 		Port: port,
 		BaseDriver: drivers.BaseDriver{
@@ -611,7 +606,7 @@ func TestUpdateDefault(t *testing.T) {
 		KubernetesVersion: constants.DefaultKubernetesVersion,
 	}
 
-	if err := UpdateCluster(h, d, kubernetesConfig); err != nil {
+	if err := UpdateCluster(d, kubernetesConfig); err != nil {
 		t.Fatalf("Error updating cluster: %s", err)
 	}
 	transferred := s.Transfers.Bytes()
@@ -654,7 +649,6 @@ func TestUpdateKubernetesVersion(t *testing.T) {
 		t.Fatalf("Error starting ssh server: %s", err)
 	}
 
-	h := tests.NewMockHost()
 	d := &tests.MockDriver{
 		Port: port,
 		BaseDriver: drivers.BaseDriver{
@@ -668,7 +662,7 @@ func TestUpdateKubernetesVersion(t *testing.T) {
 	kubernetesConfig := KubernetesConfig{
 		KubernetesVersion: server.URL,
 	}
-	if err := UpdateCluster(h, d, kubernetesConfig); err != nil {
+	if err := UpdateCluster(d, kubernetesConfig); err != nil {
 		t.Fatalf("Error updating cluster: %s", err)
 	}
 	transferred := s.Transfers.Bytes()
@@ -679,12 +673,6 @@ func TestUpdateKubernetesVersion(t *testing.T) {
 		t.Fatalf("File not copied. Expected transfers to contain: %s. It was: %s", contents, transferred)
 	}
 }
-
-type nopCloser struct {
-	io.Reader
-}
-
-func (nopCloser) Close() error { return nil }
 
 func TestIsLocalkubeCached(t *testing.T) {
 	tempDir := tests.MakeTempDir()
@@ -740,7 +728,6 @@ func TestUpdateCustomAddons(t *testing.T) {
 		t.Fatalf("Error starting ssh server: %s", err)
 	}
 
-	h := tests.NewMockHost()
 	d := &tests.MockDriver{
 		Port: port,
 		BaseDriver: drivers.BaseDriver{
@@ -768,7 +755,7 @@ func TestUpdateCustomAddons(t *testing.T) {
 	kubernetesConfig := KubernetesConfig{
 		KubernetesVersion: constants.DefaultKubernetesVersion,
 	}
-	if err := UpdateCluster(h, d, kubernetesConfig); err != nil {
+	if err := UpdateCluster(d, kubernetesConfig); err != nil {
 		t.Fatalf("Error updating cluster: %s", err)
 	}
 	transferred := s.Transfers.Bytes()
@@ -780,107 +767,5 @@ func TestUpdateCustomAddons(t *testing.T) {
 
 	if !bytes.Contains(transferred, testContent2) {
 		t.Fatalf("Custom addon not copied. Expected transfers to contain custom addon with content: %s. It was: %s", testContent2, transferred)
-	}
-}
-
-func TestCheckEndpointReady(t *testing.T) {
-	endpointNoSubsets := &v1.Endpoints{}
-	if err := checkEndpointReady(endpointNoSubsets); err == nil {
-		t.Fatalf("Endpoint had no subsets but checkEndpointReady did not return an error")
-	}
-
-	endpointNotReady := &v1.Endpoints{
-		Subsets: []v1.EndpointSubset{
-			{Addresses: []v1.EndpointAddress{},
-				NotReadyAddresses: []v1.EndpointAddress{
-					{IP: "1.1.1.1"},
-					{IP: "2.2.2.2"},
-					{IP: "3.3.3.3"},
-				}}}}
-	if err := checkEndpointReady(endpointNotReady); err == nil {
-		t.Fatalf("Endpoint had no Addresses but checkEndpointReady did not return an error")
-	}
-
-	endpointReady := &v1.Endpoints{
-		Subsets: []v1.EndpointSubset{
-			{Addresses: []v1.EndpointAddress{
-				{IP: "1.1.1.1"},
-				{IP: "2.2.2.2"},
-			},
-				NotReadyAddresses: []v1.EndpointAddress{},
-			}},
-	}
-	if err := checkEndpointReady(endpointReady); err != nil {
-		t.Fatalf("Endpoint was ready with at least one Address, but checkEndpointReady returned an error")
-	}
-}
-
-type ServiceInterfaceMock struct {
-	ServiceList *v1.ServiceList
-}
-
-func (s ServiceInterfaceMock) List(opts api.ListOptions) (*v1.ServiceList, error) {
-	serviceList := &v1.ServiceList{
-		Items: []v1.Service{},
-	}
-	keyValArr := strings.Split(opts.LabelSelector.String(), "=")
-	for _, service := range s.ServiceList.Items {
-		if service.Spec.Selector[keyValArr[0]] == keyValArr[1] {
-			serviceList.Items = append(serviceList.Items, service)
-		}
-	}
-	return serviceList, nil
-}
-func (s ServiceInterfaceMock) Get(name string) (*v1.Service, error) {
-	return nil, nil
-}
-func (s ServiceInterfaceMock) Create(*v1.Service) (*v1.Service, error) {
-	return nil, nil
-}
-func (s ServiceInterfaceMock) Update(*v1.Service) (*v1.Service, error) {
-	return nil, nil
-}
-func (s ServiceInterfaceMock) UpdateStatus(*v1.Service) (*v1.Service, error) {
-	return nil, nil
-}
-func (s ServiceInterfaceMock) Delete(string, *api.DeleteOptions) error {
-	return nil
-}
-func (s ServiceInterfaceMock) Watch(opts api.ListOptions) (watch.Interface, error) {
-	return nil, nil
-}
-func (s ServiceInterfaceMock) ProxyGet(scheme, name, port, path string, params map[string]string) rest.ResponseWrapper {
-	return nil
-}
-
-func (s ServiceInterfaceMock) DeleteCollection(options *api.DeleteOptions, listOptions api.ListOptions) error {
-	return nil
-}
-
-func (s ServiceInterfaceMock) Patch(name string, pt api.PatchType, data []byte, subresources ...string) (result *v1.Service, err error) {
-	return nil, nil
-}
-
-func TestGetServiceListFromServicesByLabel(t *testing.T) {
-	serviceList := &v1.ServiceList{
-		Items: []v1.Service{
-			{
-				Spec: v1.ServiceSpec{
-					Selector: map[string]string{
-						"foo": "bar",
-					},
-				},
-			},
-		},
-	}
-	serviceIface := ServiceInterfaceMock{
-		ServiceList: serviceList,
-	}
-	if _, err := getServiceListFromServicesByLabel(serviceIface, "nothing", "nothing"); err != nil {
-		t.Fatalf("Service had no label match, but getServiceListFromServicesByLabel returned an error")
-	}
-
-	if _, err := getServiceListFromServicesByLabel(serviceIface, "foo", "bar"); err != nil {
-		t.Fatalf("Endpoint was ready with at least one Address, but getServiceListFromServicesByLabel returned an error")
 	}
 }

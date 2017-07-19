@@ -35,23 +35,31 @@ func testClusterDNS(t *testing.T) {
 	kubectlRunner := util.NewKubectlRunner(t)
 	podName := "busybox"
 	podPath, _ := filepath.Abs("testdata/busybox.yaml")
+	defer kubectlRunner.RunCommand([]string{"delete", "-f", podPath})
 
-	dnsTest := func() error {
-		podNamespace := kubectlRunner.CreateRandomNamespace()
-		defer kubectlRunner.DeleteNamespace(podNamespace)
-
-		if _, err := kubectlRunner.RunCommand([]string{"create", "-f", podPath, "--namespace=" + podNamespace}); err != nil {
+	setupTest := func() error {
+		if _, err := kubectlRunner.RunCommand([]string{"create", "-f", podPath}); err != nil {
 			return err
 		}
-		defer kubectlRunner.RunCommand([]string{"delete", "-f", podPath, "--namespace=" + podNamespace})
+		return nil
+	}
 
+	if err := commonutil.RetryAfter(20, setupTest, 2*time.Second); err != nil {
+		t.Fatal("Error setting up DNS test.")
+	}
+
+	dnsTest := func() error {
 		p := &api.Pod{}
 		for p.Status.Phase != "Running" {
-			p = kubectlRunner.GetPod(podName, podNamespace)
+			var err error
+			p, err = kubectlRunner.GetPod(podName, "default")
+			if err != nil {
+				return &commonutil.RetriableError{Err: err}
+			}
 		}
 
-		dnsByteArr, err := kubectlRunner.RunCommand([]string{"exec", podName, "--namespace=" + podNamespace,
-			"nslookup", "kubernetes.default"})
+		dnsByteArr, err := kubectlRunner.RunCommand([]string{"exec", podName,
+			"nslookup", "kubernetes"})
 		dnsOutput := string(dnsByteArr)
 		if err != nil {
 			return &commonutil.RetriableError{Err: err}
@@ -64,6 +72,6 @@ func testClusterDNS(t *testing.T) {
 	}
 
 	if err := commonutil.RetryAfter(40, dnsTest, 5*time.Second); err != nil {
-		t.Fatalf("DNS lookup failed with error:", err)
+		t.Fatal("DNS lookup failed with error:", err)
 	}
 }

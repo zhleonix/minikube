@@ -20,6 +20,7 @@ import (
 	"bytes"
 	gflag "flag"
 	"fmt"
+	"net"
 	"strings"
 
 	"text/template"
@@ -29,9 +30,9 @@ import (
 
 // Kill any running instances.
 
-var localkubeStartCmdTemplate = "/usr/local/bin/localkube {{.Flags}} --generate-certs=false --logtostderr=true --enable-dns=false --node-ip={{.NodeIP}}"
+var localkubeStartCmdTemplate = "/usr/local/bin/localkube {{.Flags}} --generate-certs=false --logtostderr=true --enable-dns=false"
 
-var startCommandB2DTemplate = `
+var startCommandNoSystemdTemplate = `
 # Run with nohup so it stays up. Redirect logs to useful places.
 sudo sh -c 'PATH=/usr/local/sbin:$PATH nohup {{.LocalkubeStartCmd}} > {{.Stdout}} 2> {{.Stderr}} < /dev/null & echo $! > {{.Pidfile}} &'
 `
@@ -39,9 +40,6 @@ sudo sh -c 'PATH=/usr/local/sbin:$PATH nohup {{.LocalkubeStartCmd}} > {{.Stdout}
 var localkubeSystemdTmpl = `[Unit]
 Description=Localkube
 Documentation=https://github.com/kubernetes/minikube/tree/master/pkg/localkube
-
-Wants=network-online.target
-After=network-online.target
 
 [Service]
 Type=notify
@@ -56,8 +54,7 @@ ExecReload=/bin/kill -s HUP $MAINPID
 WantedBy=multi-user.target
 `
 
-var startCommandTemplate = `
-if which systemctl 2>&1 1>/dev/null; then
+var startCommandTemplate = "if [[ `systemctl` =~ -\\.mount ]] &>/dev/null;" + `then
   {{.StartCommandSystemd}}
   sudo systemctl disable systemd-networkd-wait-online.service
   sudo systemctl daemon-reload
@@ -65,7 +62,7 @@ if which systemctl 2>&1 1>/dev/null; then
   sudo systemctl restart localkube.service || true
 else
   sudo killall localkube || true
-  {{.StartCommandB2D}}
+  {{.StartCommandNoSystemd}}
 fi
 `
 
@@ -74,7 +71,7 @@ func GetStartCommand(kubernetesConfig KubernetesConfig) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	startCommandB2D, err := GetStartCommandB2D(kubernetesConfig, localkubeStartCommand)
+	startCommandNoSystemd, err := GetStartCommandNoSystemd(kubernetesConfig, localkubeStartCommand)
 	if err != nil {
 		return "", err
 	}
@@ -85,11 +82,11 @@ func GetStartCommand(kubernetesConfig KubernetesConfig) (string, error) {
 	t := template.Must(template.New("startCommand").Parse(startCommandTemplate))
 	buf := bytes.Buffer{}
 	data := struct {
-		StartCommandB2D     string
-		StartCommandSystemd string
+		StartCommandNoSystemd string
+		StartCommandSystemd   string
 	}{
-		StartCommandB2D:     startCommandB2D,
-		StartCommandSystemd: startCommandSystemd,
+		StartCommandNoSystemd: startCommandNoSystemd,
+		StartCommandSystemd:   startCommandSystemd,
 	}
 	if err := t.Execute(&buf, data); err != nil {
 		return "", err
@@ -97,8 +94,8 @@ func GetStartCommand(kubernetesConfig KubernetesConfig) (string, error) {
 	return buf.String(), nil
 }
 
-func GetStartCommandB2D(kubernetesConfig KubernetesConfig, localkubeStartCmd string) (string, error) {
-	t := template.Must(template.New("startCommand").Parse(startCommandB2DTemplate))
+func GetStartCommandNoSystemd(kubernetesConfig KubernetesConfig, localkubeStartCmd string) (string, error) {
+	t := template.Must(template.New("startCommand").Parse(startCommandNoSystemdTemplate))
 	buf := bytes.Buffer{}
 	data := struct {
 		LocalkubeStartCmd string
@@ -155,6 +152,18 @@ func GenLocalkubeStartCmd(kubernetesConfig KubernetesConfig) (string, error) {
 		flagVals = append(flagVals, "--feature-gates="+kubernetesConfig.FeatureGates)
 	}
 
+	if kubernetesConfig.APIServerName != constants.APIServerName {
+		flagVals = append(flagVals, "--apiserver-name="+kubernetesConfig.APIServerName)
+	}
+
+	if kubernetesConfig.DNSDomain != "" {
+		flagVals = append(flagVals, "--dns-domain="+kubernetesConfig.DNSDomain)
+	}
+
+	if kubernetesConfig.NodeIP != "127.0.0.1" {
+		flagVals = append(flagVals, "--node-ip="+kubernetesConfig.NodeIP)
+	}
+
 	for _, e := range kubernetesConfig.ExtraOptions {
 		flagVals = append(flagVals, fmt.Sprintf("--extra-config=%s", e.String()))
 	}
@@ -163,11 +172,11 @@ func GenLocalkubeStartCmd(kubernetesConfig KubernetesConfig) (string, error) {
 	t := template.Must(template.New("localkubeStartCmd").Parse(localkubeStartCmdTemplate))
 	buf := bytes.Buffer{}
 	data := struct {
-		Flags  string
-		NodeIP string
+		Flags         string
+		APIServerName string
 	}{
-		Flags:  flags,
-		NodeIP: kubernetesConfig.NodeIP,
+		Flags:         flags,
+		APIServerName: kubernetesConfig.APIServerName,
 	}
 	if err := t.Execute(&buf, data); err != nil {
 		return "", err
@@ -175,22 +184,81 @@ func GenLocalkubeStartCmd(kubernetesConfig KubernetesConfig) (string, error) {
 	return buf.String(), nil
 }
 
-var logsCommand = fmt.Sprintf(`
-if which systemctl 2>&1 1>/dev/null; then
-  sudo journalctl -u localkube
+const logsTemplate = "if [[ `systemctl` =~ -\\.mount ]] &>/dev/null; " + `then
+  sudo journalctl {{.Flags}} -u localkube
 else
-  tail -n +1 %s %s
+  tail -n +1 {{.Flags}} {{.RemoteLocalkubeErrPath}} {{.RemoteLocalkubeOutPath}} 
 fi
-`, constants.RemoteLocalKubeErrPath, constants.RemoteLocalKubeOutPath)
+`
 
-var localkubeStatusCommand = fmt.Sprintf(`
-if which systemctl 2>&1 1>/dev/null; then
-  sudo systemctl is-active localkube 2>&1 1>/dev/null && echo "Running" || echo "Stopped"
+func GetLogsCommand(follow bool) (string, error) {
+	t, err := template.New("logsTemplate").Parse(logsTemplate)
+	if err != nil {
+		return "", err
+	}
+	var flags []string
+	if follow {
+		flags = append(flags, "-f")
+	}
+
+	buf := bytes.Buffer{}
+	data := struct {
+		RemoteLocalkubeErrPath string
+		RemoteLocalkubeOutPath string
+		Flags                  string
+	}{
+		RemoteLocalkubeErrPath: constants.RemoteLocalKubeErrPath,
+		RemoteLocalkubeOutPath: constants.RemoteLocalKubeOutPath,
+		Flags: strings.Join(flags, " "),
+	}
+	if err := t.Execute(&buf, data); err != nil {
+		return "", err
+	}
+	return buf.String(), nil
+}
+
+var localkubeStatusCommand = fmt.Sprintf("if [[ `systemctl` =~ -\\.mount ]] &>/dev/null; "+`then
+  sudo systemctl is-active localkube &>/dev/null && echo "Running" || echo "Stopped"
 else
-  if ps $(cat %s) 2>&1 1>/dev/null; then
+  if ps $(cat %s) &>/dev/null; then
     echo "Running"
   else
     echo "Stopped"
   fi
 fi
 `, constants.LocalkubePIDPath)
+
+func GetMountCleanupCommand(path string) string {
+	return fmt.Sprintf("sudo umount %s;", path)
+}
+
+var mountTemplate = `
+sudo mkdir -p {{.Path}} || true;
+sudo mount -t 9p -o trans=tcp,port={{.Port}},dfltuid={{.UID}},dfltgid={{.GID}},version={{.Version}},msize={{.Msize}} {{.IP}} {{.Path}};
+sudo chmod 775 {{.Path}};`
+
+func GetMountCommand(ip net.IP, path, port, mountVersion string, uid, gid, msize int) (string, error) {
+	t := template.Must(template.New("mountCommand").Parse(mountTemplate))
+	buf := bytes.Buffer{}
+	data := struct {
+		IP      string
+		Path    string
+		Port    string
+		Version string
+		UID     int
+		GID     int
+		Msize   int
+	}{
+		IP:      ip.String(),
+		Path:    path,
+		Port:    port,
+		Version: mountVersion,
+		UID:     uid,
+		GID:     gid,
+		Msize:   msize,
+	}
+	if err := t.Execute(&buf, data); err != nil {
+		return "", err
+	}
+	return buf.String(), nil
+}

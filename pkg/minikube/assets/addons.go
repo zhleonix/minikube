@@ -74,11 +74,23 @@ var Addons = map[string]*Addon{
 			"dashboard-svc.yaml",
 			"0640"),
 	}, true, "dashboard"),
+	"default-storageclass": NewAddon([]*MemoryAsset{
+		NewMemoryAsset(
+			"deploy/addons/storageclass/storageclass.yaml",
+			constants.AddonsPath,
+			"storageclass.yaml",
+			"0640"),
+	}, true, "default-storageclass"),
 	"kube-dns": NewAddon([]*MemoryAsset{
 		NewMemoryAsset(
-			"deploy/addons/kube-dns/kube-dns-rc.yaml",
+			"deploy/addons/kube-dns/kube-dns-controller.yaml",
 			constants.AddonsPath,
-			"kube-dns-rc.yaml",
+			"kube-dns-controller.yaml",
+			"0640"),
+		NewMemoryAsset(
+			"deploy/addons/kube-dns/kube-dns-cm.yaml",
+			constants.AddonsPath,
+			"kube-dns-cm.yaml",
 			"0640"),
 		NewMemoryAsset(
 			"deploy/addons/kube-dns/kube-dns-svc.yaml",
@@ -130,6 +142,18 @@ var Addons = map[string]*Addon{
 			"ingress-svc.yaml",
 			"0640"),
 	}, false, "ingress"),
+	"registry": NewAddon([]*MemoryAsset{
+		NewMemoryAsset(
+			"deploy/addons/registry/registry-rc.yaml",
+			constants.AddonsPath,
+			"registry-rc.yaml",
+			"0640"),
+		NewMemoryAsset(
+			"deploy/addons/registry/registry-svc.yaml",
+			constants.AddonsPath,
+			"registry-svc.yaml",
+			"0640"),
+	}, false, "registry"),
 	"registry-creds": NewAddon([]*MemoryAsset{
 		NewMemoryAsset(
 			"deploy/addons/registry-creds/registry-creds-rc.yaml",

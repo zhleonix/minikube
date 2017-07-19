@@ -29,10 +29,6 @@ import (
 	"k8s.io/minikube/pkg/minikube/constants"
 )
 
-type configFile interface {
-	io.ReadWriter
-}
-
 type setFn func(string, string) error
 
 type Setting struct {
@@ -114,6 +110,10 @@ var settings = []Setting{
 		set:  SetBool,
 	},
 	{
+		name: config.MachineProfile,
+		set:  SetString,
+	},
+	{
 		name:        "dashboard",
 		set:         SetBool,
 		validations: []setFn{IsValidAddon},
@@ -121,6 +121,12 @@ var settings = []Setting{
 	},
 	{
 		name:        "addon-manager",
+		set:         SetBool,
+		validations: []setFn{IsValidAddon},
+		callbacks:   []setFn{EnableOrDisableAddon},
+	},
+	{
+		name:        "default-storageclass",
 		set:         SetBool,
 		validations: []setFn{IsValidAddon},
 		callbacks:   []setFn{EnableOrDisableAddon},
@@ -144,14 +150,30 @@ var settings = []Setting{
 		callbacks:   []setFn{EnableOrDisableAddon},
 	},
 	{
+		name:        "registry",
+		set:         SetBool,
+		validations: []setFn{IsValidAddon},
+		callbacks:   []setFn{EnableOrDisableAddon},
+	},
+	{
 		name:        "registry-creds",
 		set:         SetBool,
 		validations: []setFn{IsValidAddon},
 		callbacks:   []setFn{EnableOrDisableAddon},
 	},
 	{
+		name:        "default-storageclass",
+		set:         SetBool,
+		validations: []setFn{IsValidAddon},
+		callbacks:   []setFn{EnableOrDisableDefaultStorageClass},
+	},
+	{
 		name: "hyperv-virtual-switch",
 		set:  SetString,
+	},
+	{
+		name: "disable-driver-mounts",
+		set:  SetBool,
 	},
 }
 

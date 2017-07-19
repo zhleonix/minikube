@@ -26,8 +26,8 @@ import (
 
 	"github.com/golang/glog"
 
-	"k8s.io/kubernetes/pkg/util/config"
-	utilnet "k8s.io/kubernetes/pkg/util/net"
+	utilnet "k8s.io/apimachinery/pkg/util/net"
+	"k8s.io/apiserver/pkg/util/flag"
 
 	"k8s.io/minikube/pkg/util"
 )
@@ -50,9 +50,11 @@ type LocalkubeServer struct {
 	APIServerPort            int
 	APIServerInsecureAddress net.IP
 	APIServerInsecurePort    int
+	APIServerName            string
 	ShouldGenerateCerts      bool
 	ShowVersion              bool
-	RuntimeConfig            config.ConfigurationMap
+	ShowHostIP               bool
+	RuntimeConfig            flag.ConfigurationMap
 	NodeIP                   net.IP
 	ContainerRuntime         string
 	NetworkPlugin            string
@@ -178,7 +180,7 @@ func (lk LocalkubeServer) shouldGenerateCACerts() bool {
 }
 
 func (lk LocalkubeServer) getAllIPs() ([]net.IP, error) {
-	ips := []net.IP{lk.ServiceClusterIPRange.IP}
+	ips := []net.IP{net.ParseIP(util.DefaultServiceClusterIP)}
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {
 		return nil, err
@@ -199,7 +201,7 @@ func (lk LocalkubeServer) GenerateCerts() error {
 		fmt.Println("Using these existing CA certs: ", lk.GetCAPublicKeyCertPath(), lk.GetCAPrivateKeyCertPath())
 	} else {
 		fmt.Println("Creating CA cert")
-		if err := util.GenerateCACert(lk.GetCAPublicKeyCertPath(), lk.GetCAPrivateKeyCertPath()); err != nil {
+		if err := util.GenerateCACert(lk.GetCAPublicKeyCertPath(), lk.GetCAPrivateKeyCertPath(), lk.APIServerName); err != nil {
 			fmt.Println("Failed to create CA certs: ", err)
 			return err
 		}

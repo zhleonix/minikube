@@ -1,5 +1,3 @@
-// +build integration
-
 /*
 Copyright 2016 The Kubernetes Authors All rights reserved.
 
@@ -34,6 +32,8 @@ import (
 	"k8s.io/kubernetes/pkg/api"
 	commonutil "k8s.io/minikube/pkg/util"
 )
+
+const kubectlBinary = "kubectl"
 
 type MinikubeRunner struct {
 	T          *testing.T
@@ -71,6 +71,28 @@ func (m *MinikubeRunner) RunCommand(command string, checkError bool) string {
 	return string(stdout)
 }
 
+func (m *MinikubeRunner) RunDaemon(command string) *exec.Cmd {
+	commandArr := strings.Split(command, " ")
+	path, _ := filepath.Abs(m.BinaryPath)
+	cmd := exec.Command(path, commandArr...)
+	err := cmd.Start()
+	if err != nil {
+		m.T.Fatalf("Error running command: %s %s", command, err)
+	}
+	return cmd
+}
+
+func (m *MinikubeRunner) SSH(command string) (string, error) {
+	path, _ := filepath.Abs(m.BinaryPath)
+	cmd := exec.Command(path, "ssh", command)
+	stdout, err := cmd.CombinedOutput()
+	if err, ok := err.(*exec.ExitError); ok {
+		return string(stdout), err
+	}
+
+	return string(stdout), nil
+}
+
 func (m *MinikubeRunner) Start() {
 	m.RunCommand(fmt.Sprintf("start %s", m.Args), true)
 }
@@ -102,10 +124,17 @@ func (m *MinikubeRunner) GetStatus() string {
 }
 
 func (m *MinikubeRunner) CheckStatus(desired string) {
+	if err := m.CheckStatusNoFail(desired); err != nil {
+		m.T.Fatalf("%v", err)
+	}
+}
+
+func (m *MinikubeRunner) CheckStatusNoFail(desired string) error {
 	s := m.GetStatus()
 	if s != desired {
-		m.T.Fatalf("Machine is in the wrong state: %s, expected  %s", s, desired)
+		return fmt.Errorf("Machine is in the wrong state: %s, expected  %s", s, desired)
 	}
+	return nil
 }
 
 type KubectlRunner struct {
@@ -114,7 +143,7 @@ type KubectlRunner struct {
 }
 
 func NewKubectlRunner(t *testing.T) *KubectlRunner {
-	p, err := exec.LookPath("kubectl")
+	p, err := exec.LookPath(kubectlBinary)
 	if err != nil {
 		t.Fatalf("Couldn't find kubectl on path.")
 	}
@@ -173,10 +202,8 @@ func (k *KubectlRunner) DeleteNamespace(namespace string) error {
 	return err
 }
 
-func (k *KubectlRunner) GetPod(name, namespace string) *api.Pod {
+func (k *KubectlRunner) GetPod(name, namespace string) (*api.Pod, error) {
 	p := &api.Pod{}
-	if err := k.RunCommandParseOutput([]string{"get", "pod", name, "--namespace=" + namespace}, p); err != nil {
-		k.T.Fatalf("Error checking pod status: %s", err)
-	}
-	return p
+	err := k.RunCommandParseOutput([]string{"get", "pod", name, "--namespace=" + namespace}, p)
+	return p, err
 }

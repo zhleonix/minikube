@@ -52,7 +52,7 @@ if [ ! -n "$BOOT2DOCKER_DATA" ]; then
                 sleep 0.5
             done
             BOOT2DOCKER_DATA=`echo "${UNPARTITIONED_HD}1"`
-            mkfs.ext4 -i 8192 -L $LABEL $BOOT2DOCKER_DATA
+            mkfs.ext4 -i 2048 -L $LABEL $BOOT2DOCKER_DATA
         fi
 
         DISK_VENDOR=$(cat /sys/class/block/$(basename $UNPARTITIONED_HD /dev/)/device/vendor /sys/class/block/$(basename $UNPARTITIONED_HD /dev/)/device/model | tr -d "\n")
@@ -75,7 +75,7 @@ if [ ! -n "$BOOT2DOCKER_DATA" ]; then
                     # Add the data partition
                     (echo n; echo p; echo 1; echo ; echo ; echo w) | fdisk $UNPARTITIONED_HD
                     BOOT2DOCKER_DATA=`echo "${UNPARTITIONED_HD}1"`
-                    mkfs.ext4 -i 8192 -L $LABEL $BOOT2DOCKER_DATA
+                    mkfs.ext4 -i 2048 -L $LABEL $BOOT2DOCKER_DATA
                 else
                     echo "Disk unpartitioned but something is there... not doing anything"
                 fi
@@ -126,6 +126,12 @@ if [ -n "$BOOT2DOCKER_DATA" ]; then
 
     mkdir -p /mnt/$PARTNAME/data
     ln -s /mnt/$PARTNAME/data /data
+
+    mkdir -p /mnt/$PARTNAME/hostpath_pv
+    ln -s /mnt/$PARTNAME/hostpath_pv /tmp/hostpath_pv
+
+    mkdir -p /mnt/$PARTNAME/hostpath-provisioner
+    ln -s /mnt/$PARTNAME/hostpath-provisioner /tmp/hostpath-provisioner
 
     rm -rf /var/lib/rkt
     if [ ! -d /mnt/$PARTNAME/var/lib/rkt ]; then
@@ -199,4 +205,10 @@ if modprobe vboxguest &> /dev/null && modprobe vboxsf &> /dev/null; then
 	for line in $(VBoxControl --nologo sharedfolder list -automount | tail -n+3 | cut  -d ' ' -f 3); do
 		try_mount_share "$line"
 	done
+fi
+
+# This script will get called when the machine is started up
+# Feel free to add any initialization you need to be ran here
+if [ -e /var/lib/boot2docker/bootlocal.sh ]; then
+    /bin/sh /var/lib/boot2docker/bootlocal.sh
 fi

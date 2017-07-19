@@ -23,6 +23,7 @@ import (
 	"io"
 	"os"
 
+	"github.com/spf13/viper"
 	"k8s.io/minikube/pkg/minikube/constants"
 )
 
@@ -32,21 +33,10 @@ const (
 	WantReportError           = "WantReportError"
 	WantReportErrorPrompt     = "WantReportErrorPrompt"
 	WantKubectlDownloadMsg    = "WantKubectlDownloadMsg"
+	MachineProfile            = "profile"
 )
 
-type configFile interface {
-	io.ReadWriter
-}
-
-type setFn func(string, string) error
 type MinikubeConfig map[string]interface{}
-
-type Setting struct {
-	name        string
-	set         func(MinikubeConfig, string, string) error
-	validations []setFn
-	callbacks   []setFn
-}
 
 func Get(name string) (string, error) {
 	m, err := ReadConfig()
@@ -85,4 +75,12 @@ func decode(r io.Reader) (MinikubeConfig, error) {
 	var data MinikubeConfig
 	err := json.NewDecoder(r).Decode(&data)
 	return data, err
+}
+
+// GetMachineName gets the machine name for the VM
+func GetMachineName() string {
+	if viper.GetString(MachineProfile) == "" {
+		return constants.DefaultMachineName
+	}
+	return viper.GetString(MachineProfile)
 }

@@ -18,9 +18,9 @@ package cmd
 
 import (
 	goflag "flag"
-	"fmt"
 	"io/ioutil"
 	"os"
+	"runtime"
 	"strings"
 
 	"github.com/docker/machine/libmachine/log"
@@ -36,7 +36,7 @@ import (
 )
 
 var dirs = [...]string{
-	constants.Minipath,
+	constants.GetMinipath(),
 	constants.MakeMiniPath("certs"),
 	constants.MakeMiniPath("machines"),
 	constants.MakeMiniPath("cache"),
@@ -47,13 +47,8 @@ var dirs = [...]string{
 	constants.MakeMiniPath("logs"),
 }
 
-const (
-	showLibmachineLogs = "show-libmachine-logs"
-)
-
 var (
 	enableUpdateNotification = true
-	enableKubectlDownloadMsg = true
 )
 
 var viperWhiteList = []string{
@@ -74,13 +69,6 @@ var RootCmd = &cobra.Command{
 			}
 		}
 
-		if viper.GetBool(showLibmachineLogs) {
-			fmt.Println(`
---show-libmachine-logs is deprecated.
-Please use --v=3 to show libmachine logs, and --v=7 for debug level libmachine logs
-`)
-		}
-
 		// Log level 3 or greater enables libmachine logs
 		if !glog.V(3) {
 			log.SetOutWriter(ioutil.Discard)
@@ -92,21 +80,22 @@ Please use --v=3 to show libmachine logs, and --v=7 for debug level libmachine l
 			log.SetDebug(true)
 		}
 
+		logDir := pflag.Lookup("log_dir")
+		if !logDir.Changed {
+			logDir.Value.Set(constants.MakeMiniPath("logs"))
+		}
+
 		if enableUpdateNotification {
 			notify.MaybePrintUpdateTextFromGithub(os.Stderr)
 		}
-		if enableKubectlDownloadMsg {
-			util.MaybePrintKubectlDownloadMsg()
-		}
+		util.MaybePrintKubectlDownloadMsg(runtime.GOOS, os.Stderr)
 	},
 }
 
 // Execute adds all child commands to the root command sets flags appropriately.
 // This is called by main.main(). It only needs to happen once to the rootCmd.
 func Execute() {
-	if err := RootCmd.Execute(); err != nil {
-		glog.Exitln(err)
-	}
+	_ = RootCmd.Execute()
 }
 
 // Handle config values for flags used in external packages (e.g. glog)
@@ -127,16 +116,16 @@ func setFlagsUsingViper() {
 }
 
 func init() {
-	RootCmd.PersistentFlags().Bool(showLibmachineLogs, false, "Deprecated: To enable libmachine logs, set --v=3 or higher")
+	RootCmd.PersistentFlags().StringP(config.MachineProfile, "p", constants.DefaultMachineName, `The name of the minikube VM being used.  
+	This can be modified to allow for multiple minikube instances to be run independently`)
 	RootCmd.AddCommand(configCmd.ConfigCmd)
 	RootCmd.AddCommand(configCmd.AddonsCmd)
+	RootCmd.AddCommand(configCmd.ProfileCmd)
 	pflag.CommandLine.AddGoFlagSet(goflag.CommandLine)
-	logDir := pflag.Lookup("log_dir")
-	if !logDir.Changed {
-		logDir.Value.Set(constants.MakeMiniPath("logs"))
-	}
 	viper.BindPFlags(RootCmd.PersistentFlags())
+
 	cobra.OnInitialize(initConfig)
+
 }
 
 // initConfig reads in config file and ENV variables if set.

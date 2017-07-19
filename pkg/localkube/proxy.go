@@ -18,7 +18,11 @@ package localkube
 
 import (
 	kubeproxy "k8s.io/kubernetes/cmd/kube-proxy/app"
-	"k8s.io/kubernetes/cmd/kube-proxy/app/options"
+
+	"time"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/kubernetes/pkg/apis/componentconfig"
 	"k8s.io/kubernetes/pkg/kubelet/qos"
 )
@@ -29,29 +33,37 @@ var (
 )
 
 func (lk LocalkubeServer) NewProxyServer() Server {
-	return NewSimpleServer("proxy", serverInterval, StartProxyServer(lk))
+	return NewSimpleServer("proxy", serverInterval, StartProxyServer(lk), noop)
 }
 
 func StartProxyServer(lk LocalkubeServer) func() error {
-	config := options.NewProxyConfig()
-
-	// master details
-	config.Master = lk.GetAPIServerInsecureURL()
-
-	config.Mode = componentconfig.ProxyModeIPTables
-
-	// defaults
-	config.OOMScoreAdj = &OOMScoreAdj
-	config.IPTablesMasqueradeBit = &MasqueradeBit
+	config := &componentconfig.KubeProxyConfiguration{
+		OOMScoreAdj: &OOMScoreAdj,
+		ClientConnection: componentconfig.ClientConnectionConfiguration{
+			Burst: 10,
+			QPS:   5,
+		},
+		ConfigSyncPeriod: v1.Duration{Duration: 15 * time.Minute},
+		IPTables: componentconfig.KubeProxyIPTablesConfiguration{
+			MasqueradeBit: &MasqueradeBit,
+			SyncPeriod:    v1.Duration{Duration: 30 * time.Second},
+			MinSyncPeriod: v1.Duration{Duration: 5 * time.Second},
+		},
+		BindAddress:  lk.APIServerInsecureAddress.String(),
+		Mode:         componentconfig.ProxyModeIPTables,
+		FeatureGates: lk.FeatureGates,
+		// Disable the healthz check
+		HealthzBindAddress: "0",
+	}
 
 	lk.SetExtraConfigForComponent("proxy", &config)
 
-	server, err := kubeproxy.NewProxyServerDefault(config)
-	if err != nil {
-		panic(err)
-	}
-
 	return func() error {
+		// Creating this config requires the API Server to be up, so do it in the start function itself.
+		server, err := kubeproxy.NewProxyServer(config, false, runtime.NewScheme(), lk.GetAPIServerInsecureURL())
+		if err != nil {
+			panic(err)
+		}
 		return server.Run()
 	}
 }

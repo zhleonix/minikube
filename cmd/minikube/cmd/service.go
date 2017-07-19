@@ -21,14 +21,14 @@ import (
 	"os"
 	"text/template"
 
-	"github.com/docker/machine/libmachine"
-	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
-	"k8s.io/client-go/1.5/pkg/api/v1"
 	"k8s.io/minikube/pkg/minikube/cluster"
 	"k8s.io/minikube/pkg/minikube/constants"
-	"k8s.io/minikube/pkg/util"
+	"k8s.io/minikube/pkg/minikube/machine"
+	"k8s.io/minikube/pkg/minikube/service"
 )
+
+const defaultServiceFormatTemplate = "http://{{.IP}}:{{.Port}}"
 
 var (
 	namespace          string
@@ -36,13 +36,15 @@ var (
 	serviceURLMode     bool
 	serviceURLFormat   string
 	serviceURLTemplate *template.Template
+	wait               int
+	interval           int
 )
 
 // serviceCmd represents the service command
 var serviceCmd = &cobra.Command{
 	Use:   "service [flags] SERVICE",
 	Short: "Gets the kubernetes URL(s) for the specified service in your local cluster",
-	Long:  `Gets the kubernetes URL(s) for the specified service in your local cluster.  In the case of multiple URLs they will be printed one at a time`,
+	Long:  `Gets the kubernetes URL(s) for the specified service in your local cluster. In the case of multiple URLs they will be printed one at a time.`,
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
 		t, err := template.New("serviceURL").Parse(serviceURLFormat)
 		if err != nil {
@@ -50,6 +52,8 @@ var serviceCmd = &cobra.Command{
 			os.Exit(1)
 		}
 		serviceURLTemplate = t
+
+		RootCmd.PersistentPreRun(cmd, args)
 	},
 	Run: func(cmd *cobra.Command, args []string) {
 		if len(args) == 0 || len(args) > 1 {
@@ -58,74 +62,32 @@ var serviceCmd = &cobra.Command{
 			os.Exit(1)
 		}
 
-		service := args[0]
-		api := libmachine.NewClient(constants.Minipath, constants.MakeMiniPath("certs"))
+		svc := args[0]
+		api, err := machine.NewAPIClient()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error getting client: %s\n", err)
+			os.Exit(1)
+		}
 		defer api.Close()
 
 		cluster.EnsureMinikubeRunningOrExit(api, 1)
-		if err := validateService(namespace, service); err != nil {
-			fmt.Fprintln(os.Stderr, fmt.Sprintf("service '%s' could not be found running in namespace '%s' within kubernetes",
-				service, namespace))
+		err = service.WaitAndMaybeOpenService(api, namespace, svc,
+			serviceURLTemplate, serviceURLMode, https, wait, interval)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error opening service: %s\n", err)
 			os.Exit(1)
 		}
-		cluster.WaitAndMaybeOpenService(api, namespace, service, serviceURLTemplate, serviceURLMode, https)
 	},
 }
-
-const defaultServiceFormatTemplate = "http://{{.IP}}:{{.Port}}"
 
 func init() {
 	serviceCmd.Flags().StringVarP(&namespace, "namespace", "n", "default", "The service namespace")
 	serviceCmd.Flags().BoolVar(&serviceURLMode, "url", false, "Display the kubernetes service URL in the CLI instead of opening it in the default browser")
 	serviceCmd.Flags().BoolVar(&https, "https", false, "Open the service URL with https instead of http")
+	serviceCmd.Flags().IntVar(&wait, "wait", constants.DefaultWait, "Amount of time to wait for a service in seconds")
+	serviceCmd.Flags().IntVar(&interval, "interval", constants.DefaultWait, "The time interval for each check that wait performs in seconds")
 
-	serviceCmd.PersistentFlags().StringVar(&serviceURLFormat, "format", defaultServiceFormatTemplate, "Format to output service URL in.  This format will be applied to each url individually and they will be printed one at a time.")
+	serviceCmd.PersistentFlags().StringVar(&serviceURLFormat, "format", defaultServiceFormatTemplate, "Format to output service URL in. This format will be applied to each url individually and they will be printed one at a time.")
 
 	RootCmd.AddCommand(serviceCmd)
-}
-
-func validateService(namespace string, service string) error {
-	client, err := cluster.GetKubernetesClient()
-	if err != nil {
-		return errors.Wrap(err, "error validating input service name")
-	}
-	services := client.Services(namespace)
-	if _, err = services.Get(service); err != nil {
-		return errors.Wrapf(err, "service '%s' could not be found running in namespace '%s' within kubernetes", service, namespace)
-	}
-	return nil
-}
-
-// CheckService waits for the specified service to be ready by returning an error until the service is up
-// The check is done by polling the endpoint associated with the service and when the endpoint exists, returning no error->service-online
-func CheckService(namespace string, service string) error {
-	client, err := cluster.GetKubernetesClient()
-	if err != nil {
-		return &util.RetriableError{Err: err}
-	}
-	endpoints := client.Endpoints(namespace)
-	if err != nil {
-		return &util.RetriableError{Err: err}
-	}
-	endpoint, err := endpoints.Get(service)
-	if err != nil {
-		return &util.RetriableError{Err: err}
-	}
-	return CheckEndpointReady(endpoint)
-}
-
-const notReadyMsg = "Waiting, endpoint for service is not ready yet...\n"
-
-func CheckEndpointReady(endpoint *v1.Endpoints) error {
-	if len(endpoint.Subsets) == 0 {
-		fmt.Fprintf(os.Stderr, notReadyMsg)
-		return &util.RetriableError{Err: errors.New("Endpoint for service is not ready yet")}
-	}
-	for _, subset := range endpoint.Subsets {
-		if len(subset.Addresses) == 0 {
-			fmt.Fprintf(os.Stderr, notReadyMsg)
-			return &util.RetriableError{Err: errors.New("No endpoints for service are ready yet")}
-		}
-	}
-	return nil
 }
