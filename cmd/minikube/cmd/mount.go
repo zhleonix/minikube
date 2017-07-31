@@ -66,7 +66,7 @@ var mountCmd = &cobra.Command{
 		idx := strings.LastIndex(mountString, ":")
 		if idx == -1 { // no ":" was present
 			errText := `Mount directory must be in the form: 
-\tHOST_MOUNT_DIRECTORY:VM_MOUNT_DIRECTORY`
+	HOST_MOUNT_DIRECTORY:VM_MOUNT_DIRECTORY`
 			fmt.Fprintln(os.Stderr, errText)
 			os.Exit(1)
 		}
@@ -149,4 +149,5 @@ func init() {
 	mountCmd.Flags().IntVar(&uid, "uid", 1001, "Default user id used for the mount")
 	mountCmd.Flags().IntVar(&gid, "gid", 1001, "Default group id used for the mount")
 	mountCmd.Flags().IntVar(&msize, "msize", constants.DefaultMsize, "The number of bytes to use for 9p packet payload")
+	RootCmd.AddCommand(mountCmd)
 }

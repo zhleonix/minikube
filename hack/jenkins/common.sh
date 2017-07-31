@@ -71,9 +71,12 @@ sudo rm -rf $HOME/.kube || true
 
 # Allow this to fail, we'll switch on the return code below.
 set +e
-${SUDO_PREFIX}out/e2e-${OS_ARCH} -minikube-args="--vm-driver=${VM_DRIVER} --v=10" -test.v -test.timeout=30m -binary=out/minikube-${OS_ARCH}
+${SUDO_PREFIX}out/e2e-${OS_ARCH} -minikube-args="--vm-driver=${VM_DRIVER} --v=10 --logtostderr" -test.v -test.timeout=30m -binary=out/minikube-${OS_ARCH}
 result=$?
 set -e
+
+# See the KUBECONFIG file for debugging
+sudo cat $KUBECONFIG
 
 MINIKUBE_WANTREPORTERRORPROMPT=False sudo ./out/minikube-${OS_ARCH} delete \
 || MINIKUBE_WANTREPORTERRORPROMPT=False ./out/minikube-${OS_ARCH} delete \
@@ -85,6 +88,7 @@ if [[ $result -eq 0 ]]; then
   status="success"
 else
   status="failure"
+  source print-debug-info.sh
 fi
 
 set +x

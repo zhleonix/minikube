@@ -34,15 +34,20 @@ import (
 	"github.com/docker/machine/libmachine/engine"
 	"github.com/docker/machine/libmachine/host"
 	"github.com/docker/machine/libmachine/mcnerror"
+	"github.com/docker/machine/libmachine/ssh"
 	"github.com/docker/machine/libmachine/state"
 	"github.com/golang/glog"
 	"github.com/pkg/errors"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/tools/clientcmd/api"
+	"k8s.io/client-go/tools/clientcmd/api/latest"
 
 	"k8s.io/minikube/pkg/minikube/assets"
 	cfg "k8s.io/minikube/pkg/minikube/config"
 	"k8s.io/minikube/pkg/minikube/constants"
 	"k8s.io/minikube/pkg/minikube/sshutil"
 	"k8s.io/minikube/pkg/util"
+	"k8s.io/minikube/pkg/util/kubeconfig"
 )
 
 var (
@@ -56,6 +61,8 @@ const fileScheme = "file"
 //see: https://github.com/kubernetes/kubernetes/blob/master/pkg/util/logs/logs.go#L32-34
 func init() {
 	flag.Set("logtostderr", "false")
+	// Setting the default client to native gives much better performance.
+	ssh.SetDefaultClient(ssh.Native)
 }
 
 // StartHost starts a host VM.
@@ -218,7 +225,7 @@ func UpdateCluster(d drivers.Driver, config KubernetesConfig) error {
 			return errors.Wrap(err, "Error updating localkube from uri")
 		}
 	} else {
-		localkubeFile = assets.NewMemoryAsset("out/localkube", "/usr/local/bin", "localkube", "0777")
+		localkubeFile = assets.NewBinDataAsset("out/localkube", "/usr/local/bin", "localkube", "0777")
 	}
 	copyableFiles = append(copyableFiles, localkubeFile)
 
@@ -297,6 +304,23 @@ func SetupCerts(d drivers.Driver, apiServerName string, clusterDnsDomain string)
 		}
 		copyableFiles = append(copyableFiles, certFile)
 	}
+
+	kubeCfgSetup := &kubeconfig.KubeConfigSetup{
+		ClusterName:          cfg.GetMachineName(),
+		ClusterServerAddress: "https://localhost:8443",
+		ClientCertificate:    filepath.Join(util.DefaultCertPath, "apiserver.crt"),
+		ClientKey:            filepath.Join(util.DefaultCertPath, "apiserver.key"),
+		CertificateAuthority: filepath.Join(util.DefaultCertPath, "ca.crt"),
+		KeepContext:          false,
+	}
+
+	kubeCfg := api.NewConfig()
+	kubeconfig.PopulateKubeConfig(kubeCfgSetup, kubeCfg)
+	data, err := runtime.Encode(latest.Codec, kubeCfg)
+
+	kubeCfgFile := assets.NewMemoryAsset(data,
+		util.DefaultLocalkubeDirectory, "kubeconfig", "0644")
+	copyableFiles = append(copyableFiles, kubeCfgFile)
 
 	if d.DriverName() == "none" {
 		// transfer files to correct place on filesystem
@@ -449,7 +473,7 @@ func GetHostLogs(api libmachine.API, follow bool) (string, error) {
 }
 
 // MountHost runs the mount command from the 9p client on the VM to the 9p server on the host
-func MountHost(api libmachine.API, ip net.IP, path, mountVersion, port string, uid, gid, msize int) error {
+func MountHost(api libmachine.API, ip net.IP, path, port, mountVersion string, uid, gid, msize int) error {
 	host, err := CheckIfApiExistsAndLoad(api)
 	if err != nil {
 		return errors.Wrap(err, "Error checking that api exists and loading it")

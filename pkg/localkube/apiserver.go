@@ -21,6 +21,8 @@ import (
 	"path"
 	"strconv"
 
+	"github.com/coreos/etcd/embed"
+
 	apiserveroptions "k8s.io/apiserver/pkg/server/options"
 	"k8s.io/apiserver/pkg/storage/storagebackend"
 
@@ -39,8 +41,8 @@ func StartAPIServer(lk LocalkubeServer) func() error {
 	config.SecureServing.BindAddress = lk.APIServerAddress
 	config.SecureServing.BindPort = lk.APIServerPort
 
-	config.InsecureServing.BindAddress = lk.APIServerInsecureAddress
-	config.InsecureServing.BindPort = lk.APIServerInsecurePort
+	// 0 turns off insecure serving.
+	config.InsecureServing.BindPort = 0
 
 	config.Authentication.ClientCert.ClientCA = lk.GetCAPublicKeyCertPath()
 
@@ -55,8 +57,8 @@ func StartAPIServer(lk LocalkubeServer) func() error {
 	}
 	// use localkube etcd
 
-	config.Etcd.StorageConfig.ServerList = KubeEtcdClientURLs
-	config.Etcd.StorageConfig.Type = storagebackend.StorageTypeETCD2
+	config.Etcd.StorageConfig.ServerList = []string{embed.DefaultListenClientURLs}
+	config.Etcd.StorageConfig.Type = storagebackend.StorageTypeETCD3
 
 	// set Service IP range
 	config.ServiceClusterIPRange = lk.ServiceClusterIPRange
@@ -84,7 +86,7 @@ func StartAPIServer(lk LocalkubeServer) func() error {
 }
 
 func readyFunc(lk LocalkubeServer) HealthCheck {
-	hostport := net.JoinHostPort(lk.APIServerInsecureAddress.String(), strconv.Itoa(lk.APIServerInsecurePort))
-	addr := "http://" + path.Join(hostport, "healthz")
-	return healthCheck(addr)
+	hostport := net.JoinHostPort("localhost", strconv.Itoa(lk.APIServerPort))
+	addr := "https://" + path.Join(hostport, "healthz")
+	return healthCheck(addr, lk)
 }
